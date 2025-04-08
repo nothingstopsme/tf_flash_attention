@@ -148,6 +148,7 @@ constexpr T&& forward(remove_reference_t<T>&& t) noexcept
 }
 
 template <class T>
+CUTE_HOST_DEVICE
 constexpr remove_reference_t<T>&& move(T&& t) noexcept
 {
   return static_cast<remove_reference_t<T>&&>(t);

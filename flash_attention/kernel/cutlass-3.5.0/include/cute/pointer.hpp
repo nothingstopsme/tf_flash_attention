@@ -65,6 +65,21 @@ recast_ptr(void* ptr)
   CUTE_GCC_UNREACHABLE;
 }
 
+// Adding the support for volatile-qualified pointers
+template <class NewT>
+CUTE_HOST_DEVICE constexpr
+auto
+recast_ptr(volatile void* ptr)
+{
+  if constexpr (cute::is_subbyte_v<NewT>) {
+    return subbyte_iterator<volatile NewT>(ptr);
+  } else {
+    return reinterpret_cast<volatile NewT*>(ptr);
+  }
+  CUTE_GCC_UNREACHABLE;
+}
+
+
 template <class NewT>
 CUTE_HOST_DEVICE constexpr
 auto
