@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = [
+	"flash_attention",
+	"flash_attention.kernel",
+	"flash_attention.tests"
+]
+
+[project]
+name = "tf_flash_attention"
+version = "0.0.1"
+requires-python = ">=3"
+dependencies = [
+	"tensorflow[and-cuda] >= 2.1.0"
+]
+

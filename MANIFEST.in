@@ -1,0 +1,2 @@
+include flash_attention/kernel/Makefile flash_attention/kernel/*.cu flash_attention/kernel/*.cc flash_attention/kernel/*.h
+graft flash_attention/kernel/cutlass-3.5.0
