@@ -6,7 +6,7 @@ This is a [Tensorflow](https://www.tensorflow.org/) GPU kernel built upon the [C
 2. This implementation is solely focused on the attention mechanism itself; fusion of other functionalities (e.g. layer normalisation, dropout, etc.) is not included.
 3. This implementation is not tuned for any specific GPU architectures, so the speed-up might not be able to reach the level reported by [FlashAttention](https://arxiv.org/abs/2205.14135).
 4. The correctness of this implementation has only been verified with [unit tests](flash_attention/tests) and test cases from my other project; if you are interested in utilising this kernel, <ins>please make sure to test it against your use cases before deployment</ins>.
-5. All my tests and runs of this kernel were performed on Ubuntu 22.04 with Tensorflow 2.15.1; other setups are expected to work, but have never been tested.
+5. All my tests and runs of this kernel were performed on Ubuntu 22.04 with Tensorflow 2.15.1; other setups providing similar compiler/make utility support are expected to work, but have never been tested.
 
 ## Highlights
 1. Supported floating-point types: half(float16), float, double.
