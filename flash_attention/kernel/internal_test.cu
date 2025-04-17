@@ -106,7 +106,7 @@ void TestForward() {
   Q_K_seq_desc_pack.K_desc.stride.push_back(REFERENCE_SIZE / K_SIZE);
   Q_K_seq_desc_pack.K_desc.offset.push_back(0);
 
-  const auto [Q_seq_order_map, K_seq_order_map] = SyncMethod<1>::GenerateOrderMap(Q_K_seq_desc_pack);
+  const auto [reference_seq_shape, Q_seq_order_map, K_seq_order_map] = SyncMethod<1>::GenerateOrderMap(Q_K_seq_desc_pack);
   #if 0
   const AlibiMinusAndNormalise<DataType> alibi_normaliser{static_cast<DataType>(size(reference_shape))};
   const auto reference_with_heads_shape = append(reference_shape, H_SIZE);
@@ -114,6 +114,7 @@ void TestForward() {
 
   FullAttentionPolicy attention_policy;
   FlashAttentionLauncher<DataType,
+                          std::remove_cv_t<decltype(reference_seq_shape)>,
                           std::remove_cv_t<decltype(Q_seq_order_map)>, decltype(attention_policy)> launcher{};
   using L_DataType = typename decltype(launcher)::L_T;
 
@@ -259,6 +260,7 @@ void TestForward() {
         d_l.data().get(),
         d_m.data().get(),
         Br_occupancy.data().get(),
+        reference_seq_shape,
         Q_seq_order_map, K_seq_order_map,
         attention_policy);
   stopwatch.stop();
@@ -341,7 +343,7 @@ void TestBackward() {
   Q_K_seq_desc_pack.K_desc.stride.push_back(REFERENCE_SIZE / K_SIZE);
   Q_K_seq_desc_pack.K_desc.offset.push_back(0);
 
-  const auto [Q_seq_order_map, K_seq_order_map] = SyncMethod<1>::GenerateOrderMap(Q_K_seq_desc_pack);
+  const auto [reference_seq_shape, Q_seq_order_map, K_seq_order_map] = SyncMethod<1>::GenerateOrderMap(Q_K_seq_desc_pack);
   #if 0
   const AlibiMinusAndNormalise<DataType> alibi_normaliser{static_cast<DataType>(size(reference_shape))};
   const auto reference_with_heads_shape = append(reference_shape, H_SIZE);
@@ -349,6 +351,7 @@ void TestBackward() {
 
   FullAttentionPolicy attention_policy;
   FlashAttentionLauncher<DataType,
+                          std::remove_cv_t<decltype(reference_seq_shape)>,
                           std::remove_cv_t<decltype(Q_seq_order_map)>, decltype(attention_policy)> launcher{};
 
 
@@ -544,6 +547,7 @@ void TestBackward() {
         dev_dK.data().get(),
         dev_dV.data().get(),
         Br_occupancy.data().get(),
+        reference_seq_shape,
         Q_seq_order_map, K_seq_order_map,
         attention_policy);
   stopwatch.stop();
