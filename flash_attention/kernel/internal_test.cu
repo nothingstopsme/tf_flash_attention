@@ -86,7 +86,6 @@ struct AlibiMinusAndNormalise {
 
 template<typename DataType>
 void TestForward() {
-
   constexpr int B_SIZE = 1;
   constexpr int H_SIZE = 8;
   constexpr int Q_SIZE = 1024;
@@ -636,7 +635,7 @@ int main(int argc, char** argv)
   //using DataType = double;
 
   const auto random_seed = time(nullptr);
-  printf("random_seed = %lu\n", random_seed);
+  printf("random_seed = %llu\n", random_seed);
   srand(random_seed);
 
   const int device_id = 0;

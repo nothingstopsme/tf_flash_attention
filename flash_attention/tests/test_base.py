@@ -198,29 +198,33 @@ class Test(object):
           num_of_K_entries = tf.cast(tf.reduce_prod(tf.shape(K)[-self._SEQUENCE_DIMS:]), dtype=dtype)
           num_of_Q_entries = tf.cast(tf.reduce_prod(tf.shape(Q)[-self._SEQUENCE_DIMS:]), dtype=dtype)
 
-          # Only comparing the attention output O
-          vanilla = vanilla_forward_results[0]
-          flash = flash_forward_results[0]
 
-          # Conducting normalisation to account for the accumulation of precision errors
-          normalised_error = tf.abs(vanilla - flash) / num_of_K_entries
-          self.assertAllCloseAccordingToType(normalised_error, tf.zeros_like(normalised_error),
+          # Tolerance thresholds are scaled up by "tol_scale" to account for accumulation of precision errors
+          tol_scale = num_of_K_entries
+          # Only comparing the attention output O
+          self.assertAllCloseAccordingToType(vanilla_forward_results[0], flash_forward_results[0],
             msg=(
               f'{type(self).__name__}: forward, {dtype}, '
               f'random_seed = {random_seed}, '
               f'Q = {Q.shape}, K = {K.shape}, V = {V.shape}'
-            ))
+            ),
+            rtol=1e-06*tol_scale, atol=1e-06*tol_scale,
+            float_rtol=1e-06*tol_scale, float_atol=1e-06*tol_scale,
+            half_rtol=0.001*tol_scale, half_atol=0.001*tol_scale)
 
-          for vanilla, flash, normaliser in zip(vanilla_backward_results, flash_backward_results,
+
+          for vanilla, flash, tol_scale in zip(vanilla_backward_results, flash_backward_results,
                                     (num_of_K_entries, num_of_Q_entries, num_of_Q_entries)):
-            # Conducting normalisation to account for the accumulation of precision errors
-            normalised_error = tf.abs(vanilla - flash) / normaliser
-            self.assertAllCloseAccordingToType(normalised_error, tf.zeros_like(normalised_error),
+            self.assertAllCloseAccordingToType(vanilla, flash,
               msg=(
                 f'{type(self).__name__}: backward, {dtype}, '
                 f'random_seed = {random_seed}, '
                 f'Q = {Q.shape}, K = {K.shape}, V = {V.shape}'
-              ))
+              ),
+              rtol=1e-06*tol_scale, atol=1e-06*tol_scale,
+              float_rtol=1e-06*tol_scale, float_atol=1e-06*tol_scale,
+              half_rtol=0.001*tol_scale, half_atol=0.001*tol_scale)
+
 
     def report_benchmark(self, **kwargs):
       # Overriding this function to prevent the benchmark report from being shown automatically;

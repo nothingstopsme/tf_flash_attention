@@ -9,7 +9,9 @@ class TensorShape;
 }
 
 struct SequenceDescriptor {
-  using Vector = std::vector<int64_t>;
+  // Note that while int64_t is used to store the number of dimensions,
+  // currently the sizes of each dimension, and therefore indices of them, are limited to the range representable by int32_t
+  using Vector = std::vector<int32_t>;
   SequenceDescriptor(const int64_t dims) {
     shape.reserve(dims);
     stride.reserve(dims);
@@ -40,7 +42,7 @@ struct SequenceDescriptorPack {
 
 using MethodImplPtr = SequenceDescriptorPack (*)(const tensorflow::TensorShape&, const tensorflow::TensorShape&);
 
-template <int SequenceDims>
+template <int32_t SequenceDims>
 class SyncMethod {
  public:
   SyncMethod(const MethodImplPtr method_impl_ptr)
@@ -91,7 +93,7 @@ class SyncMethods {
   SyncMethods() = delete;
 
 
-  template <int SequenceDims>
+  template <int32_t SequenceDims>
   static void Lookup(const std::string& name, std::optional<SyncMethod<SequenceDims>>& functor) {
     const auto iter = _METHOD_TABLE.find(name);
     if (iter != _METHOD_TABLE.end())

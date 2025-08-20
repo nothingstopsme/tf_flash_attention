@@ -74,7 +74,7 @@ clean:
 # Defining an empty rule to avoid triggering the implicit rule for .cu files
 %.cu: ;
 
-%.cu.o: %.cu flash_attention.h type_mapping.h type_util.h
+%.cu.o: %.cu flash_attention.h type_mapping.h type_util.h cute_ext/*.h
 	@echo "Generating $@"
 	@nvcc -std=c++17 -c -o $@ $< $(CUTE_include_path) $(CUDA_include_paths) $(TF_compile_flags) \
 				-DGOOGLE_CUDA=1 -x cu -Xcompiler -fPIC -O2 $(CUDA_gencode)

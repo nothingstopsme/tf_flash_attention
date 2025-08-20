@@ -15,7 +15,7 @@ their respective sequences flattened in row-major order.
 such differences meet window constraints
 
 To further add flexibility to ordering/indexing and resultant masking behaviours, there are also 3
-synchronisation modes available to dictate how entries in two sequence are aligned when the sizes
+synchronisation modes available to dictate how entries in two sequences are aligned when the sizes
 of their sequence dimensions are different:
 
 1. none_front: Coordinates not scaled (step size = 1) and aligned at the front of each step along
@@ -27,12 +27,12 @@ respective dimensions.
 
 Below are some examples:
 
-When two 1d sequences synchronised in none_front mode are
+Two 1d sequences synchronised in none_front mode are
 aligned as follows (corresponding entries have the same indices)
 A: [0, 1, 2, 3, 4, 5]
 B: [0, 1, 2]
 
-then in scale_front mode their alignment becomes
+and in scale_front mode their alignment becomes
 A: [0, 1, 2, 3, 4, 5]
 B: [0, 2, 4]
 
@@ -40,7 +40,7 @@ while in scale_end mode it is
 A: [0, 1, 2, 3, 4, 5]
 B: [1, 3, 5]
 
-On the other hand, when two 2d sequences synchronised in none_front mode are
+On the other hand, two 2d sequences synchronised in none_front mode are
 aligned as follows (corresponding entries have the same indices)
 A: [[0, 1, 2, 3]
     [4, 5, 6, 7]
@@ -50,7 +50,7 @@ A: [[0, 1, 2, 3]
 B: [[0, 1],
     [4, 5]]
 
-then in scale_front mode their alignment becomes
+and in scale_front mode their alignment becomes
 A: [[0, 1, 2, 3]
     [4, 5, 6, 7]
     [8, 9, 10, 11]

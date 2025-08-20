@@ -5,10 +5,13 @@
 
 #include "flash_attention.h"
 #include "type_util.h"
+#include "cute_ext/boundary_check_pred.h"
+#include "cute_ext/algorithms.h"
 
 namespace cuda_device_functions {
 
 using namespace cute;
+using namespace cute_ext;
 
 template <typename Src>
 __device__
@@ -74,7 +77,7 @@ static inline void ApplyFunc(
         if (applying_predicator(rest_coords)) {
 
           const auto proxy_func = [&func, &current_value, rest_column](auto&&... args) {
-            return func(current_value, ExtractFromBroadcastable(rest_column, std::forward<decltype(args)>(args))...);
+            return func(current_value, ExtractFromBroadcastable(rest_column, static_cast<decltype(args)&&>(args))...);
           };
 
           current_value = apply(arg_tensor_tuple, proxy_func);
@@ -190,68 +193,6 @@ static inline void ReduceAlongMode1WithWarp(
     }
   }
 
-}
-
-
-
-template <typename Pred,
-          typename Tensor>
-__device__
-static inline void FillIf(const Pred& pred,
-                           Tensor& tensor,
-                           const typename Tensor::value_type& filling) {
-  CUTE_UNROLL
-  for (int i = 0; i < size(tensor); ++i) {
-    if (pred(i))
-      tensor(i) = filling;
-  }
-}
-
-
-template <typename CopyOp,
-          typename Pred,
-          typename SrcTensor,
-          typename DstTensor>
-__device__
-static inline void CopyIf(
-        const CopyOp& copy_op,
-        const Pred& pred,
-        const SrcTensor& src,
-        DstTensor&& dst)
-
-{
-  CUTE_UNROLL
-  for (int i = 0; i < size(src); ++i) {
-    if (pred(i))
-      copy_op.copy(src(i), dst(i));
-  }
-}
-
-
-
-template <typename CopyOp,
-          typename SrcPred,
-          typename SrcTensor,
-          typename DstPred,
-          typename DstTensor>
-__device__
-static inline void CopyOrFill(
-        const CopyOp& copy_op,
-        const SrcPred& src_pred,
-        const SrcTensor& src,
-        const DstPred& dst_pred,
-        DstTensor&& dst,
-        const typename std::remove_reference_t<std::remove_cv_t<DstTensor>>::value_type& filling) {
-
-  CUTE_UNROLL
-  for (int i = 0; i < size(src); ++i) {
-    if (dst_pred(i)) {
-      if (src_pred(i))
-        copy_op.copy(src(i), dst(i));
-      else
-        dst(i) = filling;
-    }
-  }
 }
 
 template <typename CopyOp,
@@ -416,12 +357,6 @@ static inline void CopyToRegisterAndGEMM(
 
 }
 
-
-
-
-
-
-
 template <typename Tensor,
           typename ThreadLayout>
 __device__
@@ -429,32 +364,6 @@ static constexpr inline auto PartitionPerThreadLayout(
   Tensor&& tensor, const ThreadLayout& thread_layout) {
   const auto thread_coord = thread_layout.get_flat_coord(threadIdx.x);
   return outer_partition(tensor, thread_layout.shape(), thread_coord);
-}
-
-
-template <size_t I = 0, typename A, typename B> //, typename Comparator>
-__device__
-static inline constexpr bool WithinBoundary(const A& a, const B& b) {
-
-  if constexpr (is_tuple<A>::value) {
-    static_assert(is_tuple<B>::value, "The \"tuple-single element\" comparison is not supported");
-
-    static_assert(tuple_size<A>::value == tuple_size<B>::value,
-                    "Tuples for comparison must have an equal length in this setting");
-    if constexpr (tuple_size<A>::value == I)
-      return true;
-    else
-      return WithinBoundary(get<I>(a), get<I>(b)) && WithinBoundary<I+1>(a, b);
-      //return CompareDims(get<I>(a), get<I>(b), comparator) && CompareDims<I+1>(a, b, comparator);
-  }
-  else {
-    static_assert(is_tuple<B>::value && decltype(depth(b))::value == 1 && tuple_size<B>::value == 2, "b should be a boundary tuple");
-
-    return a >= get<0>(b) && a <= get<1>(b);
-    //return comparator(a, b);
-  }
-
-  CUTE_GCC_UNREACHABLE;
 }
 
 #if 0
@@ -493,114 +402,9 @@ static inline constexpr auto ViewTensorAs(SrcTensor&& src) {
 #endif
 
 
-template <typename Mapping, typename BBox, int... Dimensions>
-class BoundaryCheckPred {
- public:
-
-  __device__
-  BoundaryCheckPred(Mapping&& mapping, BBox&& bbox)
-  : _mapping(static_cast<Mapping&&>(mapping)),
-    _bbox(static_cast<BBox&&>(bbox)) {
-
-    static_assert(decltype(depth(_bbox))::value == 2 && decltype(rank(_bbox))::value == sizeof...(Dimensions) && decltype(rank(_bbox))::value * 2 == tuple_size<decltype(flatten(_bbox))>::value,
-                  "bbox should have the form of ((lower_1, upper_1), ..., (lower_N, upper_N)) with N equal to the size of the template parameter pack \"Dimensions\"");
-  }
-
-  __device__
-  BoundaryCheckPred(Mapping&& mapping, const BBox& bbox)
-  : BoundaryCheckPred(static_cast<Mapping&&>(mapping), BBox(bbox)) {
-  }
 
 
 
-  template <typename... Coords>
-  __device__
-  inline constexpr auto operator()(const Coords&... coords) const {
-
-    auto lookup = _mapping(coords...);
-    using LookupType = decltype(lookup);
-
-    if constexpr (HasUnderscore<Coords...>())
-      return BoundaryCheckPred<LookupType, BBox, Dimensions...>(static_cast<LookupType&&>(lookup), _bbox);
-    else {
-      const auto targets = select<Dimensions...>(lookup);
-      return WithinBoundary(targets, _bbox);
-    }
-  }
-
-  template <typename... Coords>
-  __device__
-  inline constexpr void Print(const Coords&... coords) const {
-
-    auto lookup = _mapping(coords...);
-    print(lookup); print("/"); print(_bbox); print(" = %d\n", this->operator()(coords...));
-  }
-
-
-  template <int B, int E>
-  __device__
-  inline constexpr auto group_modes() const {
-
-    auto grouped = cute::group_modes<B,E>(_mapping);
-    using GroupedType = decltype(grouped);
-
-    return BoundaryCheckPred<GroupedType, BBox, Dimensions...>(static_cast<GroupedType&&>(grouped), _bbox);
-
-  }
-
-
- private:
-  template <typename Coord0, typename... OtherCoords>
-  __device__
-  static inline constexpr bool HasUnderscore() {
-    if constexpr (sizeof...(OtherCoords) == 0) {
-      return has_underscore<Coord0>::value;
-    }
-    else
-      return has_underscore<Coord0>::value ||  HasUnderscore<OtherCoords...>();
-  }
-
-
-
-  const Mapping _mapping;
-  const BBox _bbox;
-};
-
-template <int... Dimensions, typename Mapping, typename BBoxMin, typename BBoxMax>
-__device__
-static inline constexpr
-auto GetBoundaryCheckPred(Mapping&& mapping, BBoxMin&& bbox_min, BBoxMax&& bbox_max) {
-  auto bbox = zip(bbox_min, bbox_max);
-  using BBox = decltype(bbox);
-  return BoundaryCheckPred<Mapping, BBox, Dimensions...>(
-          static_cast<Mapping&&>(mapping),
-          static_cast<BBox&&>(bbox));
-}
-
-template <int... Dimensions, typename Mapping, typename Shape>
-__device__
-static inline constexpr
-auto GetBoundaryCheckPred(Mapping&& mapping, const Shape& shape) {
-  const auto picked_dims = select<Dimensions...>(shape);
-  constexpr auto dims_rank = decltype(rank(picked_dims))::value;
-
-  auto bbox = zip(tuple_repeat<dims_rank>(Int<0>{}),
-                  transform(picked_dims, tuple_repeat<dims_rank>(Int<1>{}), minus{}));
-
-
-  using BBox = decltype(bbox);
-  return BoundaryCheckPred<Mapping, BBox, Dimensions...>(
-          static_cast<Mapping&&>(mapping),
-          static_cast<BBox&&>(bbox));
-}
-
-
-
-template <int B, int E, typename Mapping, typename BBox, int... Dimensions>
-__device__
-static inline constexpr auto group_modes(const BoundaryCheckPred<Mapping, BBox, Dimensions...>& pred) {
-  return pred.template group_modes<B, E>();
-}
 
 #if 0
 template <typename T, typename ReferenceSeqShape>
@@ -625,7 +429,7 @@ template <
           typename V_Layout, typename V_TileShape, typename V_SM_Layout,
           typename O_Layout, typename O_TileShape,
           typename l_m_Layout, typename l_m_TileShape, typename l_m_SM_Layout,
-          typename P_S_sm_Layout,
+          typename P_S_SM_Layout,
           typename ReferenceSeqShape,
           typename Q_SeqOrderMap, typename K_SeqOrderMap, typename AttentionPolicy>
 __global__
@@ -641,14 +445,14 @@ static void ForwardImpl(
     const O_Layout O_layout, const O_TileShape O_tile_shape,
     volatile L_T* l, volatile T* m,
     const l_m_Layout l_m_layout, const l_m_TileShape l_m_tile_shape, const l_m_SM_Layout l_m_sm_layout,
-    const P_S_sm_Layout P_S_sm_layout,
+    const P_S_SM_Layout P_S_sm_layout,
     const T dot_scaler,
     volatile uint32_t* Br_occupancy,
     const ReferenceSeqShape reference_seq_shape,
     const Q_SeqOrderMap Q_seq_order_map, const K_SeqOrderMap K_seq_order_map, const AttentionPolicy attention_policy) {
 
-  constexpr typename cuda_launch::KernelConfig<T>::Mode0MajorThreadLayout MODE0_MAJOR_THREAD_LAYOUT{};
-  constexpr typename cuda_launch::KernelConfig<T>::Mode1MajorThreadLayout MODE1_MAJOR_THREAD_LAYOUT{};
+  static constexpr typename cuda_launch::KernelConfig<T>::Mode0MajorThreadLayout MODE0_MAJOR_THREAD_LAYOUT{};
+  static constexpr typename cuda_launch::KernelConfig<T>::Mode1MajorThreadLayout MODE1_MAJOR_THREAD_LAYOUT{};
 
   //
   // Tensors wrapping different portions of the shared memory buffer allocated dynamically
@@ -656,6 +460,26 @@ static void ForwardImpl(
 
   extern __shared__ char sm_buffer[];
   char* moving_head = sm_buffer;
+
+#ifndef BANK_CONFLICT_FREE_BY_SWIZZLING
+  // (Br, Bc)
+  Tensor P_S_sm = make_tensor(make_smem_ptr(reinterpret_cast<T*>(moving_head)), P_S_sm_layout);
+  moving_head += cosize(P_S_sm_layout) * sizeof(T);
+#else
+  static constexpr typename cuda_launch::KernelConfig<T>::SmSwizzler SM_SWIZZLER;
+
+  // Note that for address spaces being swizzled (like P_S_sm),
+  // the start addresses of them need to be aligned with a transaction boundary
+  // (i.e. 128-byte aligned), so that the designated swizzling configuration works correctly.
+  //
+  // Therefore, they are all allocated first to exploit the fact that
+  // shared memory buffers are naturally 128-byte aligned, and
+  // the size of each swizzled memery area is a multiple of the size of a transaction by design
+
+  // (Br, Bc)
+  Tensor P_S_sm = make_tensor(make_smem_ptr(reinterpret_cast<T*>(moving_head), SM_SWIZZLER), P_S_sm_layout);
+  moving_head += cosize(P_S_sm_layout) * sizeof(T);
+#endif
 
   // (Br, d)
   Tensor Q_sm = make_tensor(make_smem_ptr(reinterpret_cast<T*>(moving_head)), Q_sm_layout);
@@ -676,10 +500,6 @@ static void ForwardImpl(
   moving_head += l_m_memory_size;
   Tensor m_sm = make_tensor(make_smem_ptr(reinterpret_cast<T*>(moving_head)), l_m_sm_layout);
   moving_head += l_m_memory_size;
-
-  // (Br, Bc)
-  Tensor P_S_sm = make_tensor(make_smem_ptr(reinterpret_cast<T*>(moving_head)), P_S_sm_layout);
-  moving_head += cosize(P_S_sm_layout) * sizeof(T);
 
   //
   // Tensors wrapping thier respective global memory pointers
@@ -996,8 +816,8 @@ static void ForwardImpl(
   const auto min_k_order = get<0>(K_seq_order_map(first_K_index));
   const auto max_k_order = min(get<0>(K_seq_order_map(last_K_index)), max_order);
 
-  // Loading the target block of K and V into K_sm and V_sm respectively,
-  // in one single loop rather than multiple loops for each loading
+  // Loading target blocks of K and V into K_sm and V_sm respectively,
+  // in a single loop rather than separate ones for each loading
   const auto K_tile_map_m0m_partitioned_boundary_check
                 = GetBoundaryCheckPred<0, 1, 2>(K_tile_map_m0m_partitioned,
                                           bbox_min_for_K,
@@ -1286,8 +1106,8 @@ static void BackwardImpl(
     const ReferenceSeqShape reference_seq_shape,
     const Q_SeqOrderMap Q_seq_order_map, const K_SeqOrderMap K_seq_order_map, const AttentionPolicy attention_policy) {
 
-  constexpr typename cuda_launch::KernelConfig<T>::Mode0MajorThreadLayout MODE0_MAJOR_THREAD_LAYOUT{};
-  constexpr typename cuda_launch::KernelConfig<T>::Mode1MajorThreadLayout MODE1_MAJOR_THREAD_LAYOUT{};
+  static constexpr typename cuda_launch::KernelConfig<T>::Mode0MajorThreadLayout MODE0_MAJOR_THREAD_LAYOUT{};
+  static constexpr typename cuda_launch::KernelConfig<T>::Mode1MajorThreadLayout MODE1_MAJOR_THREAD_LAYOUT{};
 
   //
   // Tensors wrapping different portions of the shared memory buffer allocated dynamically
@@ -1296,13 +1116,65 @@ static void BackwardImpl(
   extern __shared__ char sm_buffer[];
   char* moving_head = sm_buffer;
 
+#ifndef BANK_CONFLICT_FREE_BY_SWIZZLING
   // Since the size of L_T might be larger than T,
-  // the space of l_sm is appropriated first to avoid alignment errors
+  // the space of l_sm is appropriated before others to avoid alignment errors
 
   // (Br, 1)
   Tensor l_sm = make_tensor(make_smem_ptr(reinterpret_cast<L_T*>(moving_head)), l_m_sm_layout);
   //Tensor l_sm_T = recast<T>(l_sm);
   moving_head += cosize(l_m_sm_layout) * sizeof(L_T);
+
+  // (Br, v_d)
+  Tensor dO_sm = make_tensor(make_smem_ptr(reinterpret_cast<T*>(moving_head)), O_dO_sm_layout);
+  moving_head += cosize(O_dO_sm_layout) * sizeof(T);
+
+  // (Br, Bc)
+  Tensor S_sm = make_tensor(make_smem_ptr(reinterpret_cast<T*>(moving_head)), S_sm_layout);
+  // Note that O_sm and S_sm share the same memory area, but occupy different column sizes
+  // (therfore having different layouts), and the memory size reserved for them
+  // should be the maximum of the two
+  moving_head += max(cosize(S_sm_layout), cosize(O_dO_sm_layout)) * sizeof(T);
+
+#else
+  static constexpr typename cuda_launch::KernelConfig<T>::SmSwizzler SM_SWIZZLER{};
+
+  // Note that for address spaces being swizzled (like O_sm, dO_sm/dO_sm_swap, and S_sm/S_sm_swap),
+  // the start addresses of them need to be aligned with a transaction boundary
+  // (i.e. 128-byte aligned), so that the designated swizzling configuration works correctly.
+  //
+  // Therefore, they are all allocated first to exploit the fact that
+  // shared memory buffers are naturally 128-byte aligned, and
+  // the size of each swizzled memery area is a multiple of the size of a transaction by design
+
+  // (Br, v_d)
+  Tensor dO_sm = make_tensor(make_smem_ptr(reinterpret_cast<T*>(moving_head), SM_SWIZZLER), O_dO_sm_layout);
+  moving_head += cosize(O_dO_sm_layout) * sizeof(T);
+
+  // (Br, Bc)
+  Tensor S_sm = make_tensor(make_smem_ptr(reinterpret_cast<T*>(moving_head), SM_SWIZZLER), S_sm_layout);
+  // Note that O_sm and S_sm share the same memory area, but occupy different column sizes
+  // (therfore having different layouts), and the memory size reserved for them
+  // should be the maximum of the two
+  moving_head += max(cosize(S_sm_layout), cosize(O_dO_sm_layout)) * sizeof(T);
+
+  // Since the size of L_T might be larger than T,
+  // the space of l_sm is appropriated before others to avoid alignment errors
+
+  // (Br, 1)
+  Tensor l_sm = make_tensor(make_smem_ptr(reinterpret_cast<L_T*>(moving_head)), l_m_sm_layout);
+  //Tensor l_sm_T = recast<T>(l_sm);
+  moving_head += cosize(l_m_sm_layout) * sizeof(L_T);
+#endif
+
+  // (v_d, Br)
+  Tensor dO_sm_swap = make_tensor(dO_sm.data(), select<1,0>(O_dO_sm_layout));
+
+  // (Bc, Br)
+  Tensor S_sm_swap = make_tensor(S_sm.data(), select<1,0>(S_sm_layout));
+
+  // (Br, v_d)
+  Tensor O_sm = make_tensor(S_sm.data(), O_dO_sm_layout);
 
   // (Br, d)
   Tensor Q_sm = make_tensor(make_smem_ptr(reinterpret_cast<T*>(moving_head)), Q_sm_layout);
@@ -1329,26 +1201,11 @@ static void BackwardImpl(
   Tensor dV_sm = make_tensor(make_smem_ptr(reinterpret_cast<T*>(moving_head)), V_dV_sm_layout);
   moving_head += V_dV_memory_size;
 
-  // (Br, v_d)
-  Tensor dO_sm = make_tensor(make_smem_ptr(reinterpret_cast<T*>(moving_head)), O_dO_sm_layout);
-  // (v_d, Br)
-  Tensor dO_sm_swap = make_tensor(dO_sm.data(), select<1,0>(O_dO_sm_layout));
-  moving_head += cosize(O_dO_sm_layout) * sizeof(T);
-
   // (Br, Bc)
   Tensor P_sm = make_tensor(make_smem_ptr(reinterpret_cast<T*>(moving_head)), P_sm_layout);
   // (Bc, Br)
   Tensor P_sm_swap = make_tensor(P_sm.data(), select<1,0>(P_sm_layout));
   moving_head += cosize(P_sm_layout) * sizeof(T);
-
-  // (Br, Bc)
-  Tensor S_sm = make_tensor(make_smem_ptr(reinterpret_cast<T*>(moving_head)), S_sm_layout);
-  // (Bc, Br)
-  Tensor S_sm_swap = make_tensor(S_sm.data(), select<1,0>(S_sm_layout));
-  // (Br, v_d)
-  // O_sm and S_sm share the same memory area, but different layouts
-  Tensor O_sm = make_tensor(S_sm.data(), O_dO_sm_layout);
-  moving_head += max(cosize(S_sm_layout), cosize(O_dO_sm_layout)) * sizeof(T);
 
   // (Br, 1)
   Tensor m_sm = make_tensor(make_smem_ptr(reinterpret_cast<T*>(moving_head)), l_m_sm_layout);
@@ -2119,29 +1976,35 @@ using namespace cute;
 
 template <typename T>
 static constexpr inline auto DecideConfigurationForForward(
-        const int shared_memory_available,
-        const int64_t b,
-        const int64_t q, const int64_t k,
-        const int64_t d, const int64_t v_d) {
+        const int32_t shared_memory_available,
+        const int32_t b,
+        const int32_t q, const int32_t k,
+        const int32_t d, const int32_t v_d) {
 
-  static_assert(sizeof(T) % 2 == 0 && sizeof(T) >= 2, "sizeof(T) should be even and >= 2");
+  // Explicitly declaring size variables as int32_t
+  constexpr int32_t size_of_T = sizeof(T);
 
-  constexpr auto PADDING_SIZE = KernelConfig<T>::PADDING_SIZE;
-
-  const int sm_size_per_block = shared_memory_available;
+  static_assert(size_of_T % 2 == 0 && size_of_T >= 2, "sizeof(T) should be even and >= 2");
 
   // Br is set to a predefined number based on the size of T
-  const int Br = KernelConfig<T>::BR_SIZE;
+  const auto Br = KernelConfig<T>::BR_SIZE;
 
   // This accounts for the memory requirement of l_sm, m_sm, and Q_sm
-  const auto Br_associated_size = (1 + 1 + d) * sizeof(T);
+  const auto Br_associated_size = (1 + 1 + d) * size_of_T;
 
+#ifndef BANK_CONFLICT_FREE_BY_SWIZZLING
   // This accounts for the memory requirement of K_sm, V_sm, and P_S_sm padded along the Br dimension;
-  const auto Bc_associated_size = (d + v_d + (Br + PADDING_SIZE)) * sizeof(T);
+  const auto Bc_associated_size = (d + v_d +
+                                      (Br + KernelConfig<T>::PADDING_SIZE)
+                                      ) * size_of_T;
+#else
+  // This accounts for the memory requirement of K_sm, V_sm, and P_S_sm
+  const auto Bc_associated_size = (d + v_d + Br) * size_of_T;
+#endif
 
-  const auto available_Bc_memory = sm_size_per_block - Br * Br_associated_size;
+  const auto available_Bc_memory = shared_memory_available - Br * Br_associated_size;
 
-  const int Bc = available_Bc_memory / Bc_associated_size;
+  const auto Bc = available_Bc_memory / Bc_associated_size;
 
   assert(Bc > 0 && "Failed to come up with a valid Bc");
 
@@ -2150,35 +2013,45 @@ static constexpr inline auto DecideConfigurationForForward(
 
 template <typename T, typename L_T>
 static constexpr inline auto DetermineConfigurationForBackward(
-        const int shared_memory_available,
-        const int64_t b,
-        const int64_t q, const int64_t k,
-        const int64_t d, const int64_t v_d) {
+        const int32_t shared_memory_available,
+        const int32_t b,
+        const int32_t q, const int32_t k,
+        const int32_t d, const int32_t v_d) {
+
+  // Explicitly declaring size variables as int32_t
+  constexpr int32_t size_of_T = sizeof(T), size_of_L_T = sizeof(L_T);
 
   static_assert(sizeof(T) % 2 == 0 && sizeof(T) >= 2, "sizeof(T) should be even and >= 2");
 
-  constexpr auto PADDING_SIZE = KernelConfig<T>::PADDING_SIZE;
-
-  const int sm_size_per_block = shared_memory_available;
-
   // Br is set to a predefined number based on the size of T
-  const int Br = KernelConfig<T>::BR_SIZE;
+  const auto Br = KernelConfig<T>::BR_SIZE;
 
   // This accounts for the memory requirement of Q_sm, dO_sm, m_sm, and l_sm
-  const auto Br_associated_size = (d + v_d + 1) * sizeof(T) + 1 * sizeof(L_T);
+  const auto Br_associated_size = (d + v_d + 1) * size_of_T + 1 * size_of_L_T;
 
   // This accounts for the memory requirement of K_sm, dK_sm, V_sm, dV_sm, P_sm,
-  const auto Bc_associated_size = (d*2 + v_d*2 + Br) * sizeof(T);
-  // This accounts for the memory requirement of S_sm padded along the Br dimension,
-  const auto Bc_associated_size_for_S_sm = (Br + PADDING_SIZE) * sizeof(T);
+  const auto Bc_associated_size = (d*2 + v_d*2 + Br) * size_of_T;
+
+#ifndef BANK_CONFLICT_FREE_BY_SWIZZLING
+  constexpr auto PADDING_SIZE = KernelConfig<T>::PADDING_SIZE;
+
+  // This accounts for the memory requirement of S_sm padded along the Br dimension specifically
+  const auto Bc_associated_size_for_S_sm = (Br + PADDING_SIZE) * size_of_T;
 
   // This accounts for the padding size of dO_sm
-  const auto Br_reservation_size = v_d * sizeof(T) * PADDING_SIZE;
+  const auto Br_reservation_size = PADDING_SIZE * v_d * size_of_T;
 
-  auto available_Bc_memory = sm_size_per_block - Br * Br_associated_size - Br_reservation_size;
+  auto available_Bc_memory = shared_memory_available - Br * Br_associated_size - Br_reservation_size;
+#else
+  // This accounts for the memory requirement of S_sm specifically
+  const auto Bc_associated_size_for_S_sm = Br * size_of_T;
 
-  int Bc = available_Bc_memory / (Bc_associated_size + Bc_associated_size_for_S_sm);
+  auto available_Bc_memory = shared_memory_available - Br * Br_associated_size;
+#endif
 
+  auto Bc = available_Bc_memory / (Bc_associated_size + Bc_associated_size_for_S_sm);
+
+  // for the purpose of sharing memory space,
   // S_sm needs to be larger enough to cover the memory requirement of O_sm, i.e. Bc should be >= v_d;
   // so when Bc < v_d, which means S_sm fails to meet that requirement,
   // trying to apppropriate the required size directly and recalculating a new Bc
@@ -2196,17 +2069,17 @@ static constexpr inline auto DetermineConfigurationForBackward(
 template <typename T, typename ReferenceSeqShape, typename SeqOrderMap, typename AttentionPolicy>
 void FlashAttentionLauncher<T, ReferenceSeqShape, SeqOrderMap, AttentionPolicy>::EstimateForwardFlops(
         const SharedMemoryDescriptor& shared_memory_dest,
-        const int64_t b,
-        const int64_t q, const int64_t k,
-        const int64_t d, const int64_t v_d,
+        const int32_t b,
+        const int32_t q, const int32_t k,
+        const int32_t d, const int32_t v_d,
         const ReferenceSeqShape& reference_seq_shape,
         const SeqOrderMap& Q_seq_order_map, const SeqOrderMap& K_seq_order_map,
         const AttentionPolicy& attention_policy,
         float& flops) const {
 
   const auto [Br, Bc] = DecideConfigurationForForward<T>(shared_memory_dest.GetAvailableAmount(), b, q, k, d, v_d);
-  const int num_of_Br = (q + Br - 1) / Br;
-  const int num_of_Bc = (k + Bc - 1) / Bc;
+  const auto num_of_Br = (q + Br - 1) / Br;
+  const auto num_of_Bc = (k + Bc - 1) / Bc;
 
   // Below are estimates of flops taken by various ops
   // on processing each pair of Bc and Br block
@@ -2214,13 +2087,14 @@ void FlashAttentionLauncher<T, ReferenceSeqShape, SeqOrderMap, AttentionPolicy>:
   // Note that for the purpse of flops estimation, only primitive ops like "+", "-", "*", "/" are considered
 
   // flops for Q @ K^T
-  const int block_gemm_Q_K_flops = Br * Bc * (2*d - 1);
+  const auto block_gemm_Q_K_flops = Br * Bc * (2*d - 1);
 
   // numerator_flops includes 2 reduction ops (max and sum along Bc)
   // and 3 elementwise ops (subtracting the max, exp(), and scaling)
-  const int numerator_flops = Br * (Bc - 1) * 2 + Br * Bc * 2;
+  const auto numerator_flops = Br * (Bc - 1) * 2 + Br * Bc * 2;
 
-  // Flops for updating l and m, as well as preparing the weight for O and P_S:
+  // Flops for ops updating l and m, as well as preparing the weights for O and P_S,
+  //
   // m_new = max(m_current, m_tilde)
   // O_weight = exp(m_current - m_new) * l_current
   // P_S_weight = exp(m_tilde - m_new)
@@ -2228,26 +2102,26 @@ void FlashAttentionLauncher<T, ReferenceSeqShape, SeqOrderMap, AttentionPolicy>:
   // O_weight /= l_new
   // P_S_weight /= l_new
   //
-  const int l_m_update_flops = Br * 7;
+  const auto l_m_update_flops = Br * 7;
 
   // reweighing O and P_S elementwise with O_weight and P_S_weight, respectively
-  const int reweighing_O_P_S_flops = Br * (Bc + v_d);
+  const auto reweighing_O_P_S_flops = Br * (Bc + v_d);
 
   // flops for P @ V
-  const int block_gemm_P_V_flops = Br * v_d * (2*Bc - 1);
+  const auto block_gemm_P_V_flops = Br * v_d * (2*Bc - 1);
 
-  const int total_flops_per_block_pair = block_gemm_Q_K_flops + numerator_flops + l_m_update_flops + reweighing_O_P_S_flops + block_gemm_P_V_flops;
+  const auto total_flops_per_block_pair = block_gemm_Q_K_flops + numerator_flops + l_m_update_flops + reweighing_O_P_S_flops + block_gemm_P_V_flops;
 
   const auto max_order = size(reference_seq_shape) - 1;
 
   flops = 0.0;
-  for (int Bc_index = 0; Bc_index < num_of_Bc; ++Bc_index) {
+  for (remove_cv_t<decltype(num_of_Bc)> Bc_index = 0; Bc_index < num_of_Bc; ++Bc_index) {
     const auto first_K_index = Bc_index * Bc;
     const auto last_K_index = (Bc_index+1) * Bc - 1;
     const auto min_k_order = get<0>(K_seq_order_map(first_K_index));
     const auto max_k_order = min(get<0>(K_seq_order_map(last_K_index)), max_order);
 
-    for (int Br_index = 0; Br_index < num_of_Br; ++Br_index) {
+    for (remove_cv_t<decltype(num_of_Br)> Br_index = 0; Br_index < num_of_Br; ++Br_index) {
 
       const auto first_Q_index = Br_index * Br;
       const auto last_Q_index = (Br_index+1) * Br - 1;
@@ -2273,9 +2147,9 @@ void FlashAttentionLauncher<T, ReferenceSeqShape, SeqOrderMap, AttentionPolicy>:
 template <typename T, typename ReferenceSeqShape, typename SeqOrderMap, typename AttentionPolicy>
 cudaError_t FlashAttentionLauncher<T, ReferenceSeqShape, SeqOrderMap, AttentionPolicy>::Forward(
         const cudaStream_t stream, const SharedMemoryDescriptor& shared_memory_dest,
-        const int64_t b,
-        const int64_t q, const int64_t k,
-        const int64_t d, const int64_t v_d,
+        const int32_t b,
+        const int32_t q, const int32_t k,
+        const int32_t d, const int32_t v_d,
         const T* Q, const T* K, const T* V,
         T* O, L_T* l, T* m,
         uint32_t* Br_occupancy,
@@ -2295,9 +2169,7 @@ cudaError_t FlashAttentionLauncher<T, ReferenceSeqShape, SeqOrderMap, AttentionP
   }
   #endif
 
-  const int padded_Br = Br + KernelConfig<T>::PADDING_SIZE;
-
-  // The size of the x dimension of the thtread grid
+  // The size of the x dimension of the thread grid
   // is set to the number of Bc sections needed to cover k,
   const auto grid_dim_x = (k + Bc - 1) / Bc;
   // The y dimension of the thread grid is set to b (the batch size)
@@ -2307,11 +2179,11 @@ cudaError_t FlashAttentionLauncher<T, ReferenceSeqShape, SeqOrderMap, AttentionP
   // Layouts for the global memories
   //
 
-  const Layout Q_layout = make_layout(make_shape(q, d, b));
-  const Layout K_layout = make_layout(make_shape(k, d, b));
-  const Layout V_layout = make_layout(make_shape(k, v_d, b));
-  const Layout O_layout = make_layout(make_shape(q, v_d, b));
-  const Layout l_m_layout = make_layout(make_shape(q, Int<1>{}, b));
+  const auto Q_layout = make_layout(make_shape(q, d, b));
+  const auto K_layout = make_layout(make_shape(k, d, b));
+  const auto V_layout = make_layout(make_shape(k, v_d, b));
+  const auto O_layout = make_layout(make_shape(q, v_d, b));
+  const auto l_m_layout = make_layout(make_shape(q, Int<1>{}, b));
 
 
   //
@@ -2330,14 +2202,20 @@ cudaError_t FlashAttentionLauncher<T, ReferenceSeqShape, SeqOrderMap, AttentionP
   // Layouts for the shared memories
   //
 
-  const Layout Q_sm_layout = make_layout(select<0, 1>(Q_tile_shape));
-  const Layout K_sm_layout = make_layout(select<0, 1>(K_tile_shape));
-  const Layout V_sm_layout = make_layout(select<0, 1>(V_tile_shape));
-  const Layout l_m_sm_layout = make_layout(select<0, 1>(l_m_tile_shape));
+  const auto Q_sm_layout = make_layout(select<0, 1>(Q_tile_shape));
+  const auto K_sm_layout = make_layout(select<0, 1>(K_tile_shape));
+  const auto V_sm_layout = make_layout(select<0, 1>(V_tile_shape));
+  const auto l_m_sm_layout = make_layout(select<0, 1>(l_m_tile_shape));
 
+#ifndef BANK_CONFLICT_FREE_BY_SWIZZLING
   // S_P_sm is padded along the Br dimension by PADDING_SIZE
-  const Layout S_P_sm_layout = make_layout(make_shape(get<0>(Q_tile_shape), get<0>(K_tile_shape)), make_stride(Int<1>{}, padded_Br));
-
+  const auto S_P_sm_layout = make_layout(make_shape(get<0>(Q_tile_shape), get<0>(K_tile_shape)),
+                                            make_stride(Int<1>{}, Br + KernelConfig<T>::PADDING_SIZE));
+#else
+  // S_P_sm will be accessed in both mode0-majored (row-majored) and mode1-majored (column-majored) manners,
+  // and therefore in the device code, swizzling will be applied to its shared memory area to avoid bank-conflict
+  const auto S_P_sm_layout = make_layout(make_shape(get<0>(Q_tile_shape), get<0>(K_tile_shape)));
+#endif
 
   //
   // Preparing for kernel launching
@@ -2348,16 +2226,16 @@ cudaError_t FlashAttentionLauncher<T, ReferenceSeqShape, SeqOrderMap, AttentionP
                           + cosize(V_sm_layout)
                           + cosize(l_m_sm_layout) * 2 // 2 for l_sm and m_sm
                           + cosize(S_P_sm_layout)
-                          ) * sizeof(T);
+                          ) * static_cast<int32_t>(sizeof(T));
 
   dim3 block_dims(KernelConfig<T>::NUM_OF_THREADS);
   dim3 grid_dims(grid_dim_x, grid_dim_y);
 
 
 #ifdef INTERNAL_TEST
-  print("grid = (%d, %d), num of threads = %u, sizeof(T) = %zu, sizeof(L_T) = %zu\n", grid_dim_x, grid_dim_y, block_dims.x, sizeof(T), sizeof(L_T));
+  print("grid = (%u, %u), num of threads = %u, sizeof(T) = %zu, sizeof(L_T) = %zu\n", grid_dims.x, grid_dims.y, block_dims.x, sizeof(T), sizeof(L_T));
 
-  print("b = %d, q = %ld, k = %ld, d = %d, v_d = %d, Br = %d, Bc = %d, sm_size_required = %zu/%d\n",
+  print("b = %d, q = %d, k = %d, d = %d, v_d = %d, Br = %d, Bc = %d, sm_size_required = %d/%d\n",
           b, q, k, d, v_d, Br, Bc, sm_size_required, shared_memory_dest.GetAvailableAmount());
 #endif
 
@@ -2413,9 +2291,9 @@ cudaError_t FlashAttentionLauncher<T, ReferenceSeqShape, SeqOrderMap, AttentionP
 template <typename T, typename ReferenceSeqShape, typename SeqOrderMap, typename AttentionPolicy>
 cudaError_t FlashAttentionLauncher<T, ReferenceSeqShape, SeqOrderMap, AttentionPolicy>::Backward(
         const cudaStream_t stream, const SharedMemoryDescriptor& shared_memory_dest,
-        const int64_t b,
-        const int64_t q, const int64_t k,
-        const int64_t d, const int64_t v_d,
+        const int32_t b,
+        const int32_t q, const int32_t k,
+        const int32_t d, const int32_t v_d,
         const T* Q, const T* K, const T* V, const T* O, const L_T* l, const T* m,
         const T* dO,
         T* dQ, T* dK, T* dV,
@@ -2436,8 +2314,6 @@ cudaError_t FlashAttentionLauncher<T, ReferenceSeqShape, SeqOrderMap, AttentionP
   }
   #endif
 
-  const int padded_Br = Br + KernelConfig<T>::PADDING_SIZE;
-
   // The size of the x dimension of the thtread grid
   // is set to the number of Bc sections needed to cover k,
   const auto grid_dim_x = (k + Bc - 1) / Bc;
@@ -2448,11 +2324,11 @@ cudaError_t FlashAttentionLauncher<T, ReferenceSeqShape, SeqOrderMap, AttentionP
   // Layouts for global memories
   //
 
-  const Layout Q_dQ_layout = make_layout(make_shape(q, d, b));
-  const Layout K_dK_layout = make_layout(make_shape(k, d, b));
-  const Layout V_dV_layout = make_layout(make_shape(k, v_d, b));
-  const Layout O_dO_layout = make_layout(make_shape(q, v_d, b));
-  const Layout l_m_layout = make_layout(make_shape(q, Int<1>{}, b));
+  const auto Q_dQ_layout = make_layout(make_shape(q, d, b));
+  const auto K_dK_layout = make_layout(make_shape(k, d, b));
+  const auto V_dV_layout = make_layout(make_shape(k, v_d, b));
+  const auto O_dO_layout = make_layout(make_shape(q, v_d, b));
+  const auto l_m_layout = make_layout(make_shape(q, Int<1>{}, b));
 
   //
   // Tile shapes
@@ -2470,42 +2346,55 @@ cudaError_t FlashAttentionLauncher<T, ReferenceSeqShape, SeqOrderMap, AttentionP
   //
   // Layouts for shared memories
   //
-  const Layout Q_sm_layout = make_layout(select<0, 1>(Q_dQ_tile_shape));
-  const Layout K_dK_sm_layout = make_layout(select<0, 1>(K_dK_tile_shape));
-  const Layout V_dV_sm_layout = make_layout(select<0, 1>(V_dV_tile_shape));
-
-  // both O_sm and dO_sm are padded along the Br dimension by PADDING_SIZE
-  const Layout O_dO_sm_layout = make_layout(select<0, 1>(O_dO_tile_shape), make_stride(Int<1>{}, padded_Br));
+  const auto Q_sm_layout = make_layout(select<0, 1>(Q_dQ_tile_shape));
+  const auto K_dK_sm_layout = make_layout(select<0, 1>(K_dK_tile_shape));
+  const auto V_dV_sm_layout = make_layout(select<0, 1>(V_dV_tile_shape));
+  const auto l_m_sm_layout = make_layout(select<0, 1>(l_m_tile_shape));
 
   // P_sm is mode1-majored (column-majored)
-  const Layout P_sm_layout = make_layout(make_shape(get<0>(Q_dQ_tile_shape), get<0>(K_dK_tile_shape)), LayoutRight{});
+  const auto P_sm_layout = make_layout(make_shape(get<0>(Q_dQ_tile_shape), get<0>(K_dK_tile_shape)), LayoutRight{});
+
+#ifndef BANK_CONFLICT_FREE_BY_SWIZZLING
+  const auto padded_Br = Br + KernelConfig<T>::PADDING_SIZE;
+
+  // both O_sm and dO_sm are padded along the Br dimension by PADDING_SIZE
+  const auto O_dO_sm_layout = make_layout(select<0, 1>(O_dO_tile_shape), make_stride(Int<1>{}, padded_Br));
 
   // S_sm is padded along the Br dimension by PADDING_SIZE;
-  const Layout S_sm_layout = make_layout(make_shape(get<0>(Q_dQ_tile_shape), get<0>(K_dK_tile_shape)), make_stride(Int<1>{}, padded_Br));
+  const auto S_sm_layout = make_layout(make_shape(get<0>(Q_dQ_tile_shape), get<0>(K_dK_tile_shape)), make_stride(Int<1>{}, padded_Br));
+#else
+  // O_sm and dO_sm will be accessed in both mode0-majored (row-majored) and mode1-majored (column-majored) manners,
+  // and therefore in the device code, swizzling will be applied to their shared memory area to avoid bank-conflict;
+  // also note that O_sm and S_sm will share the same memory space.
+  const auto O_dO_sm_layout = make_layout(select<0, 1>(O_dO_tile_shape));
 
-  const Layout l_m_sm_layout = make_layout(select<0, 1>(l_m_tile_shape));
+  // S_sm will be accessed in both mode0-majored (row-majored) and mode1-majored (column-majored) manners,
+  // and therefore in the device code, swizzling will be applied to its shared memory area to avoid bank-conflict;
+  // also note that O_sm and S_sm will share the same memory space.
+  const auto S_sm_layout = make_layout(make_shape(get<0>(Q_dQ_tile_shape), get<0>(K_dK_tile_shape)));
+#endif
 
   //
   // Preparing for kernel launching
   //
 
-  auto sm_size_required = (cosize(Q_sm_layout)
+  const auto sm_size_required = (cosize(Q_sm_layout)
                               + cosize(K_dK_sm_layout) * 2 // 2 for K_sm and dK_sm
                               + cosize(V_dV_sm_layout) * 2 // 2 for V_sm and dV_sm
                               + cosize(O_dO_sm_layout)
                               + cosize(P_sm_layout)
                               + max(cosize(S_sm_layout), cosize(O_dO_sm_layout)) // for the memory area shared by S_sm and O_sm
                               + cosize(l_m_sm_layout)
-                              ) * sizeof(T)
-                          + cosize(l_m_sm_layout) * sizeof(L_T); // for l_sm, of which the data type is L_T instead of T
+                              ) * static_cast<int32_t>(sizeof(T))
+                          + cosize(l_m_sm_layout) * static_cast<int32_t>(sizeof(L_T)); // for l_sm, of which the data type is L_T instead of T
 
   dim3 block_dims(KernelConfig<T>::NUM_OF_THREADS);
   dim3 grid_dims(grid_dim_x, grid_dim_y);
 
 #ifdef INTERNAL_TEST
-  print("grid = (%u, %u), num of threads = %u, sizeof(T) = %zu, sizeof(L_T) = %zu\n", grid_dim_x, grid_dim_y, block_dims.x, sizeof(T), sizeof(L_T));
+  print("grid = (%u, %u), num of threads = %u, sizeof(T) = %zu, sizeof(L_T) = %zu\n", grid_dims.x, grid_dims.y, block_dims.x, sizeof(T), sizeof(L_T));
 
-  print("b = %d, q = %d, k = %d, d = %d, v_d = %d, Br = %d, Bc = %d, sm_size_required = %zu/%d\n",
+  print("b = %d, q = %d, k = %d, d = %d, v_d = %d, Br = %d, Bc = %d, sm_size_required = %d/%d\n",
           b, q, k, d, v_d, Br, Bc, sm_size_required, shared_memory_dest.GetAvailableAmount());
 #endif
 
@@ -2559,16 +2448,16 @@ cudaError_t FlashAttentionLauncher<T, ReferenceSeqShape, SeqOrderMap, AttentionP
 
 
 using Seq1dOrderMap = cute::Tensor<
-                                    cute::ViewEngine<cute::ArithmeticTupleIterator<cute::ArithmeticTuple<int64_t>>>,
-                                    cute::Layout<cute::tuple<int64_t>, cute::tuple<cute::ScaledBasis<int64_t, 0>>>
+                                    cute::ViewEngine<cute::ArithmeticTupleIterator<cute::ArithmeticTuple<int32_t>>>,
+                                    cute::Layout<cute::tuple<int32_t>, cute::tuple<cute::ScaledBasis<int32_t, 0>>>
                                   >;
 using Seq2dOrderMap = cute::Tensor<
-                                    cute::ViewEngine<cute::ArithmeticTupleIterator<cute::ArithmeticTuple<int64_t>>>,
-                                    cute::Layout<cute::tuple<int64_t, int64_t>, cute::tuple<cute::ScaledBasis<int64_t, 0>, cute::ScaledBasis<int64_t, 0>>>
+                                    cute::ViewEngine<cute::ArithmeticTupleIterator<cute::ArithmeticTuple<int32_t>>>,
+                                    cute::Layout<cute::tuple<int32_t, int32_t>, cute::tuple<cute::ScaledBasis<int32_t, 0>, cute::ScaledBasis<int32_t, 0>>>
                                   >;
 
-using ReferenceSeqShape1d = cute::tuple<int64_t>;
-using ReferenceSeqShape2d = cute::tuple<int64_t, int64_t>;
+using ReferenceSeqShape1d = cute::tuple<int32_t>;
+using ReferenceSeqShape2d = cute::tuple<int32_t, int32_t>;
 
 #define INSTANTIATE_LAUNCHER(T, ReferenceSeqShape, SeqOrderMap, AttentionPolicy) \
   template struct FlashAttentionLauncher<T, ReferenceSeqShape, SeqOrderMap, AttentionPolicy>;

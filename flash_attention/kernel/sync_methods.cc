@@ -1,6 +1,7 @@
 
 #include "sync_methods.h"
 #include "tensorflow/core/framework/tensor_shape.h"
+#include "cute_ext/algorithms.h"
 
 using namespace tensorflow;
 
@@ -9,14 +10,18 @@ static SequenceDescriptorPack SyncNoneFront(const TensorShape& Q_seq_shape, cons
   SequenceDescriptorPack pack(Q_seq_shape.dims());
 
   // Inserting dimension info in reversing order
-  for (int64_t dim = Q_seq_shape.dims()-1; dim >= 0; --dim) {
-    const int64_t Q_dim = Q_seq_shape.dim_size(dim);
-    const int64_t K_dim = K_seq_shape.dim_size(dim);
-    const int64_t max_dim = Q_dim > K_dim ? Q_dim : K_dim;
+  for (auto dim = Q_seq_shape.dims()-1; dim >= 0; --dim) {
+    const SequenceDescriptor::Vector::value_type Q_dim = Q_seq_shape.dim_size(dim);
+    const SequenceDescriptor::Vector::value_type K_dim = K_seq_shape.dim_size(dim);
+    const SequenceDescriptor::Vector::value_type max_dim = Q_dim > K_dim ? Q_dim : K_dim;
 
     // For the purpose of efficient integer arithmetic,
     // ref_dim is set to a power of 2 >= max_dim
-    const int64_t ref_dim = static_cast<int64_t>(std::pow(2.0, std::ceil(std::log2(static_cast<double>(max_dim)))));
+    std::remove_cv_t<decltype(max_dim)> ref_dim = decltype(max_dim)(1) << cute_ext::log2i(max_dim);
+
+    if (ref_dim < max_dim) {
+      ref_dim <<= 1;
+    }
 
     pack.reference_shape.push_back(ref_dim);
 
@@ -41,14 +46,19 @@ static SequenceDescriptorPack SyncScaleFront(const TensorShape& Q_seq_shape, con
   SequenceDescriptorPack pack(Q_seq_shape.dims());
 
   // Inserting dimension info in reversing order
-  for (int64_t dim = Q_seq_shape.dims()-1; dim >= 0; --dim) {
-    const int64_t Q_dim = Q_seq_shape.dim_size(dim);
-    const int64_t K_dim = K_seq_shape.dim_size(dim);
-    const int64_t max_dim = Q_dim > K_dim ? Q_dim : K_dim;
+  for (auto dim = Q_seq_shape.dims()-1; dim >= 0; --dim) {
+    const SequenceDescriptor::Vector::value_type Q_dim = Q_seq_shape.dim_size(dim);
+    const SequenceDescriptor::Vector::value_type K_dim = K_seq_shape.dim_size(dim);
+    const SequenceDescriptor::Vector::value_type max_dim = Q_dim > K_dim ? Q_dim : K_dim;
 
     // For the purpose of efficient integer arithmetic,
     // ref_dim is set to a power of 2 >= max_dim
-    const int64_t ref_dim = static_cast<int64_t>(std::pow(2.0, std::ceil(std::log2(static_cast<double>(max_dim)))));
+    std::remove_cv_t<decltype(max_dim)> ref_dim = decltype(max_dim)(1) << cute_ext::log2i(max_dim);
+
+    if (ref_dim < max_dim) {
+      ref_dim <<= 1;
+    }
+
 
     pack.reference_shape.push_back(ref_dim);
 
@@ -72,14 +82,18 @@ static SequenceDescriptorPack SyncScaleEnd(const TensorShape& Q_seq_shape, const
   SequenceDescriptorPack pack(Q_seq_shape.dims());
 
   // Inserting dimension info in reversing order
-  for (int64_t dim = Q_seq_shape.dims()-1; dim >= 0; --dim) {
-    const int64_t Q_dim = Q_seq_shape.dim_size(dim);
-    const int64_t K_dim = K_seq_shape.dim_size(dim);
-    const int64_t max_dim = Q_dim > K_dim ? Q_dim : K_dim;
+  for (auto dim = Q_seq_shape.dims()-1; dim >= 0; --dim) {
+    const SequenceDescriptor::Vector::value_type Q_dim = Q_seq_shape.dim_size(dim);
+    const SequenceDescriptor::Vector::value_type K_dim = K_seq_shape.dim_size(dim);
+    const SequenceDescriptor::Vector::value_type max_dim = Q_dim > K_dim ? Q_dim : K_dim;
 
     // For the purpose of efficient integer arithmetic,
     // ref_dim is set to a power of 2 >= max_dim
-    const int64_t ref_dim = static_cast<int64_t>(std::pow(2.0, std::ceil(std::log2(static_cast<double>(max_dim)))));
+    std::remove_cv_t<decltype(max_dim)> ref_dim = decltype(max_dim)(1) << cute_ext::log2i(max_dim);
+
+    if (ref_dim < max_dim) {
+      ref_dim <<= 1;
+    }
 
     pack.reference_shape.push_back(ref_dim);
 
