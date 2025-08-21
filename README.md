@@ -72,6 +72,7 @@ O = flash_attention.local_1d(Q, K, V, window_size=32, log2_stride_size=0, is_cau
 ```
 You could also check `help(flash_attention)` for detailed interface documentation.
 
-## To-Do
-1. Substituting the "swizzle" trick for "padding" to tackle bank-conflict with better shared-memory efficiency.
-2. Including tweaks proposed in [FlashAttention-2](https://arxiv.org/abs/2307.08691)
+## To-do
+1. ~~Substituting the "swizzle" trick for "padding" to tackle bank-conflict with better shared-memory efficiency.~~ \
+   Having tried to implement the swizzle trick via cute::Swizzle provided by CuTe library; however, it seems that the cost of address manipulation incurred whenever a swizzled memory location gets accessed outweighs the benefit of extra memory saved from padding, as my test has shown a slight slowdown with this swizzle trick. For that reason, this currently remains an opt-in feature, and can only be manually enabled by setting the compile flag *BANK_CONFLICT_FREE_BY_SWIZZLING* when compiling the kernel shared object.
+3. Including tweaks proposed in [FlashAttention-2](https://arxiv.org/abs/2307.08691)
